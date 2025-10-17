@@ -25,8 +25,8 @@ interface CTLTXFormProps extends SharedFormProps {
 }
 
 const VEO_MODELS_LTX = [
-    { value: 'veo-3.0-fast-generate-001', label: 'VEO 3.0 Fast' },
-    { value: 'veo-3.0-generate-001', label: 'VEO 3.0' },
+    { value: 'veo-3.1-fast-generate-preview', label: 'VEO 3.1 Fast' },
+    { value: 'veo-3.1-generate-preview', label: 'VEO 3.1' },
 ];
 
 const GENRES = ["Sci-Fi", "Fantasy", "Horror", "Comedy", "Drama", "Action", "Thriller", "Documentary", "Animation", "Romance", "Custom..."];
@@ -214,24 +214,15 @@ const CTLTXForm: React.FC<CTLTXFormProps> = ({
         });
     }, [setLtxProject]);
     
-    const isVeo3Model = useMemo(() => ltxProject.videoModel.includes('veo-3.0'), [ltxProject.videoModel]);
+    const isVeo31Model = useMemo(() => ltxProject.videoModel.startsWith('veo-3.1'), [ltxProject.videoModel]);
 
     useEffect(() => {
-        const model = ltxProject.videoModel;
         const currentAspectRatio = ltxProject.aspectRatio;
         const currentResolution = ltxProject.resolution;
         let updates: Partial<LtxProject> = {};
-
-        if (model === 'veo-3.0-generate-001' && currentAspectRatio !== '16:9') {
-            updates.aspectRatio = '16:9';
-        } else if (model.includes('veo-3.0-fast') && !['16:9', '9:16'].includes(currentAspectRatio)) {
-            updates.aspectRatio = '16:9';
-        }
         
-        if (model.includes('veo-3.0-fast') && currentResolution !== '720p') {
-            updates.resolution = '720p';
-        }
-        
+        // 1080p is only supported for 16:9 aspect ratio in some VEO models.
+        // This logic ensures compatibility.
         if (currentAspectRatio !== '16:9' && currentResolution === '1080p') {
             updates.resolution = '720p';
         }
@@ -239,17 +230,15 @@ const CTLTXForm: React.FC<CTLTXFormProps> = ({
         if (Object.keys(updates).length > 0) {
             updateProject(updates);
         }
-    }, [ltxProject.videoModel, ltxProject.aspectRatio, ltxProject.resolution, updateProject]);
+    }, [ltxProject.aspectRatio, ltxProject.resolution, updateProject]);
 
     const aspectRatioOptions = useMemo(() => {
-        if (ltxProject.videoModel === 'veo-3.0-generate-001') return ['16:9'];
         return ['16:9', '9:16'];
-    }, [ltxProject.videoModel]);
+    }, []);
 
     const resolutionOptions = useMemo(() => {
-        if (ltxProject.videoModel.includes('veo-3.0-fast')) return ['720p'];
         return ['720p', '1080p'];
-    }, [ltxProject.videoModel]);
+    }, []);
 
 
     const loadFFmpeg = useCallback(async () => {
@@ -396,7 +385,7 @@ FORMAT OUTPUT KRITIS: Kembalikan hasilnya sebagai objek JSON tunggal yang dimini
                     numberOfVideos: 1,
                     aspectRatio: project.aspectRatio,
                 };
-                if (isVeo3Model) {
+                if (project.videoModel.startsWith('veo-3.1')) {
                     videoConfig.resolution = project.resolution;
                 }
 
@@ -438,7 +427,7 @@ FORMAT OUTPUT KRITIS: Kembalikan hasilnya sebagai objek JSON tunggal yang dimini
             addLog(`[CT-LTX] Gagal pada Adegan ${scene.sceneNumber} (${type}): ${friendlyError}`, 'error');
             updateProject(p => ({...p, scenes: p.scenes.map(s => s.id === sceneId ? { ...s, status: 'error' } : s) }));
         }
-    }, [setLtxProject, addLog, logUsage, addToMediaLibrary, executeApiCallWithKeyRotation, isVeo3Model, updateProject]);
+    }, [setLtxProject, addLog, logUsage, addToMediaLibrary, executeApiCallWithKeyRotation, updateProject]);
     
     const handleGenerateAllVisuals = async () => {
         const scenesToProcess = ltxProject.scenes;
@@ -777,7 +766,7 @@ FORMAT OUTPUT KRITIS: Kembalikan hasilnya sebagai objek JSON tunggal yang dimini
                             <Select label="Rasio Aspek" id="ltxAspectRatio" value={ltxProject.aspectRatio} onChange={e => updateProject({ aspectRatio: e.target.value })} disabled={aspectRatioOptions.length === 1}>
                                 {aspectRatioOptions.map(r => <option key={r} value={r}>{r}</option>)}
                             </Select>
-                            {isVeo3Model && (
+                            {isVeo31Model && (
                                 <Select label="Resolusi" id="ltxResolution" value={ltxProject.resolution} onChange={e => updateProject({ resolution: e.target.value as '720p' | '1080p' })} disabled={resolutionOptions.length === 1 || (ltxProject.aspectRatio !== '16:9' && ltxProject.resolution === '1080p')}>
                                     {resolutionOptions.map(r => <option key={r} value={r} disabled={r === '1080p' && ltxProject.aspectRatio !== '16:9'}>{r}{r === '1080p' && ltxProject.aspectRatio !== '16:9' ? ' (hanya 16:9)' : ''}</option>)}
                                 </Select>

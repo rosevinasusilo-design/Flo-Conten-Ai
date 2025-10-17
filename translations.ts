@@ -142,4 +142,20 @@ export const resources = {
 
   // Bottom Nav Bar
   navVideoPrompt: { id: 'Video Prompt', en: 'Video Prompt' },
+
+  // Product Analysis Audio
+  generateAudioButton: { id: 'Buat Audio', en: 'Generate Audio' },
+  generatingAudio: { id: 'Membuat audio...', en: 'Generating audio...' },
+  audioGenerationFailed: { id: 'Gagal membuat audio.', en: 'Audio generation failed.' },
+  retryButton: { id: 'Coba Lagi', en: 'Retry' },
+  voiceStyleLabel: { id: 'Gaya Suara', en: 'Voice Style' },
+  downloadAudio: { id: 'Unduh Audio', en: 'Download Audio' },
+
+  // Ad Strategy
+  adStrategyLabel: { id: 'Strategi Iklan', en: 'Ad Strategy' },
+  adStrategyDefault: { id: 'Standar', en: 'Standard' },
+  adStrategyProblemSolution: { id: 'Masalah/Solusi', en: 'Problem/Solution' },
+  adStrategyBenefitDriven: { id: 'Fokus Manfaat', en: 'Benefit-Driven' },
+  adStrategyUgc: { id: 'Gaya Testimoni/UGC', en: 'UGC/Testimonial Style' },
+  adStrategyUnboxing: { id: 'Pengalaman Unboxing', en: 'Unboxing Experience' },
 };

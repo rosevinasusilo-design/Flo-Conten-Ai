@@ -93,6 +93,11 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({ files, onFilesChan
         {previewUrl ? (
           <>
             <img src={previewUrl} alt="Preview" className="w-full h-full object-contain rounded-md p-2" />
+            {files.length > 1 && (
+                <div className="absolute bottom-2 left-2 bg-black/70 text-white text-xs font-semibold px-2 py-1 rounded-md">
+                    + {files.length - 1} lainnya
+                </div>
+            )}
             <button 
               onClick={handleRemoveImage}
               className="absolute top-2 right-2 p-1.5 bg-black/60 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/80"

@@ -1,407 +1,368 @@
-import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { generateVideo } from '../services/geminiService';
-import { AspectRatio, Resolution, VeoModel, CharacterVoice, VisualStyle, Scene } from '../types';
-import { getLastFrameAsBase64, isValidJson } from '../utils/videoUtils';
-
-import Button from './Button';
-import { ImageUploader } from './ImageUploader';
-import { Spinner } from './Spinner';
-import SelectInput from './SelectInput';
-import TextAreaInput from './TextAreaInput';
-import ToggleSwitch from './ToggleSwitch';
-import VideoPlayer from './VideoPlayer';
-import RadioButtonGroup from './RadioButtonGroup';
-import { useLanguage } from '../contexts/LanguageContext';
+import React, { useState, useCallback, useRef } from 'react';
 import { useApiKey } from '../contexts/ApiKeyContext';
-import { DownloadIcon } from './icons';
+import { useLanguage } from '../contexts/LanguageContext';
+import SelectInput from './SelectInput';
+import TextInput from './TextInput';
+import TextAreaInput from './TextAreaInput';
+import Button from './Button';
+import { Spinner } from './Spinner';
+import { SparklesIcon, VideoIcon, DownloadIcon } from './icons';
+import { analyzeProductForAdCreative, generateMultiSceneAdScript, generateVideo } from '../services/geminiService';
+import VideoPlayer from './VideoPlayer';
+import type { ImageInput, AspectRatio, VeoModel, AdCreativeAnalysis, AdStrategy } from '../types';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { toBlobURL } from '@ffmpeg/util';
+import { ImageUploader } from './ImageUploader';
 
-const fileToBase64 = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
+const fileToImageInput = (file: File): Promise<ImageInput> => {
+  return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.readAsDataURL(file);
     reader.onload = () => {
-        const result = reader.result as string;
-        const base64 = result.split(',')[1];
-        resolve(base64);
+      const result = reader.result as string;
+      const [mimePart, dataPart] = result.split(';base64,');
+      const mimeType = mimePart.split(':')[1];
+      resolve({ data: dataPart, mimeType });
     };
     reader.onerror = (error) => reject(error);
+    reader.readAsDataURL(file);
   });
+};
 
-type OutputStatus = 'pending' | 'generating' | 'done';
-interface Output {
-  id: number;
-  status: OutputStatus;
-  url?: string;
+const videoStyleOptions = [
+    { value: 'Dynamic & Fast-Paced', label: 'Dinamis & Cepat' },
+    { value: 'Cinematic & Elegant', label: 'Sinematik & Elegan' },
+    { value: 'Minimalist & Clean', label: 'Minimalis & Bersih' },
+    { value: 'Funny & Viral-style', label: 'Lucu & Gaya Viral' },
+    { value: 'UGC (User-Generated Content) style', label: 'Gaya UGC' },
+];
+
+interface SceneResult {
+    id: number;
+    prompt: string;
+    status: 'pending' | 'generating' | 'done' | 'error';
+    videoUrl?: string;
 }
 
 const VideoGenerator: React.FC = () => {
-  const { t } = useLanguage();
-  const { apiKey, isApiKeySet } = useApiKey();
-  const [scenes, setScenes] = useState<Scene[]>([{ id: Date.now(), prompt: '', usePreviousScene: false }]);
-  const [imageFiles, setImageFiles] = useState<File[]>([]);
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16');
-  const [enableSound, setEnableSound] = useState<boolean>(true);
-  const [resolution, setResolution] = useState<Resolution>('1080p');
-  const [veoModel, setVeoModel] = useState<VeoModel>('veo-3.0-fast-generate-preview');
-  const [visualStyle, setVisualStyle] = useState<VisualStyle>('Cinematic');
-  const [characterVoice, setCharacterVoice] = useState<CharacterVoice>('bahasa-indonesia');
-  
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [isStopping, setIsStopping] = useState<boolean>(false);
-  const stopRequested = useRef(false);
-  const [error, setError] = useState<string | null>(null);
-  const [outputs, setOutputs] = useState<Output[]>([]);
+    const { apiKey, isApiKeySet } = useApiKey();
+    const { t } = useLanguage();
 
-  const isVeo3 = useMemo(() => veoModel.startsWith('veo-3.0'), [veoModel]);
+    // Step management
+    const [step, setStep] = useState<'idle' | 'analyzing' | 'ready' | 'generating_video' | 'done'>('idle');
+    const [loadingStatus, setLoadingStatus] = useState('');
+    const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (veoModel === 'veo-2.0-generate-001') {
-      setEnableSound(false);
-    } else {
-      setEnableSound(true);
-    }
-    if (isVeo3) {
-      setAspectRatio('16:9');
-    }
-  }, [veoModel, isVeo3]);
-  
-  const handleAddScene = () => {
-    setScenes([...scenes, { id: Date.now(), prompt: '', usePreviousScene: true }]);
-  };
-
-  const handleRemoveScene = (id: number) => {
-    setScenes(scenes.filter(scene => scene.id !== id));
-  };
-
-  const handleSceneChange = (id: number, field: keyof Omit<Scene, 'id'>, value: any) => {
-    setScenes(scenes.map(scene => {
-      if (scene.id === id) {
-        return { ...scene, [field]: value };
-      }
-      return scene;
-    }));
-  };
-
-  const handleFilesChange = useCallback((files: File[]) => {
-    setImageFiles(files);
-  }, []);
-
-  const handleStop = useCallback(() => {
-    stopRequested.current = true;
-    setIsStopping(true);
-  }, []);
-
-  const clearProject = useCallback(() => {
-    setScenes([{ id: Date.now(), prompt: '', usePreviousScene: false }]);
-    setImageFiles([]);
-    setAspectRatio('9:16');
-    setEnableSound(true);
-    setResolution('1080p');
-    setVeoModel('veo-3.0-fast-generate-preview');
-    setVisualStyle('Cinematic');
-    setCharacterVoice('bahasa-indonesia');
-    setError(null);
-    setOutputs([]);
-  }, []);
-
-  const handleDownload = (url: string, sceneIndex: number) => {
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `veo-scene-${sceneIndex + 1}.mp4`; // Suggest a filename
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+    // Inputs
+    const [productLink, setProductLink] = useState('');
+    const [productImageFile, setProductImageFile] = useState<File[]>([]);
+    const [productImage, setProductImage] = useState<ImageInput | null>(null);
     
-    if (!isApiKeySet) {
-        setError(t('apiKeyMissingError'));
-        return;
-    }
+    // Analysis & Creative Direction
+    const [analysis, setAnalysis] = useState<AdCreativeAnalysis | null>(null);
     
-    if (scenes.some(s => !s.prompt.trim())) {
-        setError(t('promptRequiredForSceneError'));
-        return;
-    }
+    // Form fields (can be edited by user)
+    const [targetAudience, setTargetAudience] = useState('');
+    const [videoStyle, setVideoStyle] = useState('Dynamic & Fast-Paced');
+    const [adStrategy, setAdStrategy] = useState<AdStrategy>('default');
+    const [sellingPoints, setSellingPoints] = useState('');
+    const [cta, setCta] = useState('');
+    const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16');
 
-    setIsLoading(true);
-    setIsStopping(false);
-    stopRequested.current = false;
-    setError(null);
-    setOutputs(scenes.map(scene => ({ id: scene.id, status: 'pending' })));
+    // Outputs
+    const [scenes, setScenes] = useState<SceneResult[]>([]);
+    const [finalVideoUrl, setFinalVideoUrl] = useState<string | null>(null);
 
-    let lastFrame: { base64: string; mimeType: string } | null = null;
+    // FFmpeg
+    const ffmpegRef = useRef<FFmpeg | null>(null);
+    const [isMerging, setIsMerging] = useState(false);
 
-    try {
-      if (imageFiles.length > 0) {
-        const imageFile = imageFiles[0];
-        lastFrame = {
-          base64: await fileToBase64(imageFile),
-          mimeType: imageFile.type,
-        };
-      }
+    const adStrategyOptions: { value: AdStrategy, label: string }[] = [
+        { value: 'default', label: t('adStrategyDefault') },
+        { value: 'problem-solution', label: t('adStrategyProblemSolution') },
+        { value: 'benefit-driven', label: t('adStrategyBenefitDriven') },
+        { value: 'ugc-testimonial', label: t('adStrategyUgc') },
+        { value: 'unboxing', label: t('adStrategyUnboxing') },
+    ];
 
-      for (let i = 0; i < scenes.length; i++) {
-        if (stopRequested.current) {
-            break;
+    const resetState = () => {
+        setStep('idle');
+        setLoadingStatus('');
+        setError(null);
+        setAnalysis(null);
+        setScenes([]);
+        setFinalVideoUrl(null);
+        setTargetAudience('');
+        setVideoStyle('Dynamic & Fast-Paced');
+        setSellingPoints('');
+        setCta('');
+        setAdStrategy('default');
+    };
+    
+    const handleProductImageChange = useCallback(async (files: File[]) => {
+        setProductImageFile(files);
+        if (files.length > 0) {
+            const img = await fileToImageInput(files[0]);
+            setProductImage(img);
+        } else {
+            setProductImage(null);
         }
+    }, []);
 
-        const scene = scenes[i];
+    const loadFFmpeg = useCallback(async () => {
+        if (ffmpegRef.current) return ffmpegRef.current;
+        const ffmpeg = new FFmpeg();
+        ffmpeg.on('log', ({ message }) => console.log(message));
+        const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm";
+        await ffmpeg.load({
+            coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+            wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        });
+        ffmpegRef.current = ffmpeg;
+        return ffmpeg;
+    }, []);
+
+    const handleAnalyze = async () => {
+        if (!isApiKeySet || !productLink || !productImage) return;
+
+        // Reset part of the state, but keep inputs
+        setStep('analyzing');
+        setLoadingStatus('Menganalisis link produk...');
+        setError(null);
+        setAnalysis(null);
+        setScenes([]);
+        setFinalVideoUrl(null);
         
-        setOutputs(prev => prev.map((output, index) => index === i ? { ...output, status: 'generating' } : output));
-        
-        let imageBase64: string | null = null;
-        let imageMimeType: string | null = null;
-
-        const useImage = (i === 0 && imageFiles.length > 0) || (i > 0 && scene.usePreviousScene);
-
-        if (useImage && lastFrame) {
-            imageBase64 = lastFrame.base64;
-            imageMimeType = lastFrame.mimeType;
+        try {
+            const result = await analyzeProductForAdCreative(apiKey, productLink);
+            setAnalysis(result);
+            setTargetAudience(result.targetAudience);
+            setVideoStyle(result.videoStyle);
+            setSellingPoints(result.sellingPoints.join(', '));
+            setCta(result.cta);
+            
+            setStep('ready');
+            setLoadingStatus('');
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Terjadi kesalahan tidak diketahui saat analisis.');
+            setStep('idle');
+            setLoadingStatus('');
         }
+    };
+    
+    const handleGenerateVideo = async () => {
+        if (!analysis || !productImage) return;
 
-        let promptPayload: string | object = scene.prompt;
-        if (isValidJson(scene.prompt)) {
-            try {
-                promptPayload = JSON.parse(scene.prompt);
-            } catch (err) {
-                 console.warn(`Could not parse supposedly valid JSON in scene ${i + 1}. Sending as plain text.`);
+        setStep('generating_video');
+        setError(null);
+        setFinalVideoUrl(null);
+
+        try {
+            setLoadingStatus('Menulis naskah video 4 adegan...');
+            const scenePrompts = await generateMultiSceneAdScript(apiKey, {
+                productName: analysis.productName,
+                targetAudience, videoStyle, sellingPoints: sellingPoints.split(','), cta
+            }, aspectRatio, adStrategy);
+
+            setScenes(scenePrompts.map((p, i) => ({ id: i, prompt: p, status: 'pending' })));
+
+            const generatedScenes: SceneResult[] = [];
+            for (let i = 0; i < scenePrompts.length; i++) {
+                setLoadingStatus(`Membuat video untuk adegan ${i + 1} dari 4...`);
+                setScenes(prev => prev.map(s => s.id === i ? { ...s, status: 'generating' } : s));
+
+                try {
+                    const videoUrl = await generateVideo(
+                        apiKey,
+                        { prompt: scenePrompts[i], imageBase64: productImage.data, imageMimeType: productImage.mimeType, model: 'veo-3.1-fast-generate-preview' },
+                        aspectRatio,
+                        false, '720p', 'none', 'Cinematic'
+                    );
+                    const newScene: SceneResult = { id: i, prompt: scenePrompts[i], status: 'done', videoUrl };
+                    generatedScenes.push(newScene);
+                    setScenes(prev => prev.map(s => s.id === i ? newScene : s));
+                } catch (sceneError) {
+                     console.error(`Error generating scene ${i+1}:`, sceneError);
+                     const errorScene: SceneResult = { id: i, prompt: scenePrompts[i], status: 'error' };
+                     generatedScenes.push(errorScene);
+                     setScenes(prev => prev.map(s => s.id === i ? errorScene : s));
+                     throw new Error(`Gagal membuat video untuk adegan ${i+1}. Proses dihentikan.`);
+                }
             }
+
+            setStep('done');
+            setLoadingStatus('');
+
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Gagal membuat video.');
+            setStep('ready');
+            setLoadingStatus('');
+        }
+    };
+    
+    const handleMergeVideos = async () => {
+        const videoScenes = scenes.filter(s => s.status === 'done' && s.videoUrl);
+        if (videoScenes.length !== 4) {
+            setError('Tidak semua 4 adegan berhasil dibuat untuk digabungkan.');
+            return;
         }
 
-        const generatedUrl = await generateVideo(
-          apiKey,
-          { prompt: promptPayload, imageBase64, imageMimeType, model: veoModel },
-          aspectRatio,
-          enableSound,
-          resolution,
-          characterVoice,
-          visualStyle
-        );
-        
-        setOutputs(prev => prev.map((output, index) => index === i ? { ...output, status: 'done', url: generatedUrl } : output));
+        setIsMerging(true);
+        setLoadingStatus('Menggabungkan video...');
+        try {
+            const ffmpeg = await loadFFmpeg();
+            let fileListContent = '';
 
-        if (i < scenes.length - 1 && scenes[i + 1].usePreviousScene) {
-          lastFrame = await getLastFrameAsBase64(generatedUrl);
+            for (let i = 0; i < videoScenes.length; i++) {
+                const scene = videoScenes[i];
+                const fileName = `scene_${i}.mp4`;
+                const videoBlob = await fetch(scene.videoUrl!).then(r => r.blob());
+                await ffmpeg.writeFile(fileName, new Uint8Array(await videoBlob.arrayBuffer()));
+                fileListContent += `file '${fileName}'\n`;
+            }
+
+            await ffmpeg.writeFile('filelist.txt', fileListContent);
+            await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'filelist.txt', '-c', 'copy', 'output.mp4']);
+            
+            const data = await ffmpeg.readFile('output.mp4');
+            const mergedBlob = new Blob([data], { type: 'video/mp4' });
+            setFinalVideoUrl(URL.createObjectURL(mergedBlob));
+
+        } catch(err) {
+            setError(err instanceof Error ? err.message : 'Gagal menggabungkan video.');
+        } finally {
+            setIsMerging(false);
+            setLoadingStatus('');
         }
-      }
-      
-      if (stopRequested.current) {
-        setError(t('generationStoppedByUser'));
-      }
+    };
 
-    } catch (err) {
-      if (!stopRequested.current) {
-        const errorMessage = err instanceof Error ? err.message : 'An unexpected error occurred.';
-        setError(`${t('generationFailedError')} ${errorMessage}`);
-        setOutputs(prev => prev.map(o => ({ ...o, status: o.status === 'generating' ? 'pending' : o.status })));
-      }
-    } finally {
-      setIsLoading(false);
-      setIsStopping(false);
-    }
-  };
+    const isLoading = step === 'analyzing' || step === 'generating_video' || isMerging;
 
-  const aspectRatioStyle: React.CSSProperties = {
-    aspectRatio: aspectRatio.replace(':', ' / '),
-  };
-
-  // FIX: Explicitly typed the aspectRatioOptions array to match the expected SelectOption<AspectRatio>[] type.
-  const aspectRatioOptions: { value: AspectRatio; label: string }[] = isVeo3
-    ? [{ value: '16:9', label: t('aspectRatio16x9') }]
-    : [
-        { value: '9:16', label: t('aspectRatio9x16') },
-        { value: '16:9', label: t('aspectRatio16x9') },
-      ];
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 h-full">
-      {/* Controls Panel */}
-      <aside className="lg:col-span-3 bg-gray-800 p-4 border-r border-gray-700 overflow-y-auto h-full">
-        <form onSubmit={handleSubmit} className="space-y-6 flex flex-col h-full">
-          <fieldset disabled={isLoading} className="space-y-6 flex-grow">
-            
-            <div className="space-y-4 p-4 bg-gray-900/50 rounded-lg">
-                <SelectInput<VeoModel>
-                    label={t('veoModelLabel')}
-                    value={veoModel}
-                    onChange={setVeoModel}
-                    options={[
-                        { value: 'veo-3.0-fast-generate-preview', label: 'VEO 3.0 (Fast Preview)' },
-                        { value: 'veo-2.0-generate-001', label: 'VEO 2.0 (Stable)' },
-                    ]}
-                />
-                <ImageUploader files={imageFiles} onFilesChange={handleFilesChange} maxFiles={1} label={t('initialImageLabel')} />
-            </div>
-
-            <div className="space-y-4">
-                <h3 className="text-sm font-semibold text-gray-400 px-1">{t('scenesTitle')}</h3>
-              {scenes.map((scene, index) => (
-                <div key={scene.id} className="bg-gray-700/50 p-3 rounded-lg border border-gray-600/50 relative space-y-2">
-                   <div className="flex items-center justify-between">
-                     <span className="text-xs font-semibold text-gray-400">{t('sceneLabel')} {index + 1}</span>
-                      {scenes.length > 1 && (
-                        <button type="button" onClick={() => handleRemoveScene(scene.id)} className="text-gray-500 hover:text-red-400">
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                        </button>
-                      )}
-                   </div>
-                  <TextAreaInput 
-                    label=""
-                    value={scene.prompt}
-                    onChange={(val) => handleSceneChange(scene.id, 'prompt', val)}
-                    placeholder={t('promptPlaceholder')}
-                  />
-                   <div className="flex items-center justify-end flex-wrap gap-2 text-xs">
-                      {index > 0 && (
-                          <ToggleSwitch label={t('usePreviousSceneLabel')} enabled={scene.usePreviousScene} onChange={(val) => handleSceneChange(scene.id, 'usePreviousScene', val)} />
-                      )}
-                  </div>
+    return (
+        <div className="h-full overflow-y-auto bg-dots-pattern p-6 lg:p-10">
+            <div className="max-w-6xl mx-auto space-y-8">
+                {/* 1. Input Section */}
+                <div className="bg-gray-800/50 backdrop-blur-sm p-6 space-y-6 border border-gray-700 rounded-2xl">
+                    <header>
+                        <h1 className="text-2xl font-bold text-white">1. Analisa & Persiapan</h1>
+                        <p className="text-sm text-gray-400">Masukkan link dan gambar produk Anda. AI akan menganalisisnya untuk membuatkan iklan.</p>
+                    </header>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                         <div className="space-y-4">
+                            <TextInput
+                                label="Link Produk"
+                                value={productLink}
+                                onChange={(e) => setProductLink(e.target.value)}
+                                placeholder="https://tokopedia.com/..."
+                                className="!bg-gray-900"
+                                disabled={isLoading}
+                            />
+                             <ImageUploader 
+                                label="Gambar Produk Utama"
+                                files={productImageFile}
+                                onFilesChange={handleProductImageChange}
+                                maxFiles={1}
+                                disabled={isLoading}
+                             />
+                        </div>
+                        <div className="flex items-center justify-center">
+                             <Button onClick={handleAnalyze} disabled={isLoading || !isApiKeySet || !productLink.trim() || !productImage} className="w-full h-full text-lg">
+                                {step === 'analyzing' ? <Spinner /> : <SparklesIcon className="w-5 h-5" />}
+                                Analisa & Siapkan
+                            </Button>
+                        </div>
+                    </div>
                 </div>
-              ))}
-               <Button type="button" variant="secondary" onClick={handleAddScene} className="w-full">
-                  {t('addSceneButton')}
-              </Button>
-            </div>
-            
-            <div className="space-y-4 p-4 bg-gray-900/50 rounded-lg">
-                <h3 className="text-sm font-semibold text-gray-400 -mt-1 mb-2">{t('settingsTitle')}</h3>
-                <SelectInput<VisualStyle>
-                    label={t('visualStyleLabel')}
-                    value={visualStyle}
-                    onChange={setVisualStyle}
-                    options={[
-                        { value: 'Cinematic', label: t('styleCinematic') },
-                        { value: 'Realistic', label: t('styleRealistic') },
-                        { value: 'Anime', label: t('styleAnime') },
-                        { value: 'Pixar3D', label: t('stylePixar3D') },
-                        { value: 'Cyberpunk', label: t('styleCyberpunk') },
-                        { value: "Retro 80's", label: t('styleRetro80s') },
-                    ]}
-                />
-                <div className="grid grid-cols-2 gap-4">
-                    <SelectInput<AspectRatio> 
-                        label={t('aspectRatioLabel')}
-                        value={aspectRatio}
-                        onChange={setAspectRatio}
-                        options={aspectRatioOptions}
-                        disabled={isVeo3}
-                    />
-                    <SelectInput<Resolution> 
-                        label={t('resolutionLabel')}
-                        value={resolution}
-                        onChange={setResolution}
-                        options={[
-                            { value: '1080p', label: t('resolution1080p') },
-                            { value: '720p', label: t('resolution720p') },
-                        ]}
-                    />
-                </div>
-                <ToggleSwitch label={t('enableSoundLabel')} enabled={enableSound} onChange={setEnableSound} disabled={veoModel === 'veo-2.0-generate-001'} />
-                {veoModel === 'veo-3.0-fast-generate-preview' && enableSound && (
-                  <SelectInput<CharacterVoice> 
-                      label={t('characterVoiceLabel')}
-                      value={characterVoice}
-                      onChange={setCharacterVoice}
-                      options={[
-                          { value: 'none', label: t('voiceNone') },
-                          { value: 'english', label: t('voiceEnglish') },
-                          { value: 'bahasa-indonesia', label: t('voiceIndonesian') },
-                      ]}
-                  />
+
+                 {/* Global Status/Error */}
+                {isLoading && <div className="text-center text-white p-4"><Spinner className="w-8 h-8 mx-auto" /><p className="mt-2 text-lg font-medium">{loadingStatus}</p></div>}
+                {error && <div className="text-center text-red-400 p-4 bg-red-900/30 rounded-lg"><h3 className="font-bold">Terjadi Kesalahan</h3><p>{error}</p><button onClick={() => { setError(null); setStep('idle');}} className="mt-2 text-sm text-gray-300 underline">Coba Lagi</button></div>}
+
+                {/* 2. Creative Direction Section */}
+                {(step === 'ready' || step === 'generating_video' || step === 'done') && analysis && productImage && (
+                    <div className="bg-gray-800/50 backdrop-blur-sm p-6 space-y-6 border border-gray-700 rounded-2xl animate-fade-in-fast">
+                        <h2 className="text-2xl font-bold text-white">2. Arahan Kreatif (Disarankan AI)</h2>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                            <div className="space-y-4">
+                                <h3 className="font-semibold text-lg text-emerald-400">Gambar Referensi Utama</h3>
+                                <div className="aspect-square bg-gray-900 rounded-lg flex items-center justify-center p-2">
+                                     <img src={`data:${productImage.mimeType};base64,${productImage.data}`} className="max-w-full max-h-full object-contain rounded-md" />
+                                </div>
+                            </div>
+                            <div className="space-y-4">
+                                <h3 className="font-semibold text-lg text-emerald-400">Strategi Video</h3>
+                                <SelectInput
+                                    label={t('adStrategyLabel')}
+                                    value={adStrategy}
+                                    onChange={setAdStrategy}
+                                    options={adStrategyOptions}
+                                    disabled={isLoading}
+                                />
+                                <TextInput label="Target Audiens" value={targetAudience} onChange={e => setTargetAudience(e.target.value)} disabled={isLoading} />
+                                <SelectInput label="Gaya Video" value={videoStyle} onChange={setVideoStyle} options={videoStyleOptions} disabled={isLoading} />
+                                <TextAreaInput label="Poin Penjualan Utama" value={sellingPoints} onChange={setSellingPoints} rows={3} disabled={isLoading} />
+                                <TextInput label="Call to Action (CTA)" value={cta} onChange={e => setCta(e.target.value)} disabled={isLoading} />
+                                 <div>
+                                    <label className="block text-sm font-medium text-gray-400 mb-2">Aspek Rasio</label>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {(['9:16', '1:1', '16:9'] as AspectRatio[]).map(ratio => (
+                                            <button type="button" key={ratio} onClick={() => setAspectRatio(ratio)} disabled={isLoading} className={`py-2 text-sm font-semibold rounded-md transition-colors ${aspectRatio === ratio ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{ratio}</button>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="pt-6 border-t border-gray-700">
+                             <Button onClick={handleGenerateVideo} disabled={isLoading || step === 'generating_video' || step === 'done'} className="w-full max-w-md mx-auto !text-lg">
+                                {step === 'generating_video' ? <Spinner /> : <VideoIcon className="w-6 h-6" />}
+                                Buat Video Iklan
+                            </Button>
+                        </div>
+                    </div>
+                )}
+                
+                {/* 3. Results Section */}
+                {(step === 'generating_video' || step === 'done') && (
+                     <div className="bg-gray-800/50 backdrop-blur-sm p-6 space-y-6 border border-gray-700 rounded-2xl animate-fade-in-fast">
+                        <h2 className="text-2xl font-bold text-white">3. Hasil Video</h2>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            {scenes.map(scene => (
+                                <div key={scene.id} className="aspect-square bg-gray-900 rounded-lg flex items-center justify-center flex-col gap-2">
+                                    {scene.status === 'generating' && <Spinner />}
+                                    {scene.status === 'done' && scene.videoUrl && <VideoPlayer videoUrl={scene.videoUrl} aspectRatio="1:1" />}
+                                    {scene.status === 'error' && <div className="text-center text-xs text-red-400 p-2">Gagal membuat adegan</div>}
+                                    <p className="text-xs text-gray-400">Adegan {scene.id + 1}</p>
+                                </div>
+                            ))}
+                        </div>
+                         {step === 'done' && (
+                            <div className="pt-6 border-t border-gray-700 text-center space-y-4">
+                                {finalVideoUrl ? (
+                                    <div>
+                                        <h3 className="font-semibold text-lg text-emerald-400 mb-4">Video Final</h3>
+                                        <div className="max-w-sm mx-auto">
+                                            <VideoPlayer videoUrl={finalVideoUrl} aspectRatio={aspectRatio} />
+                                        </div>
+                                        <a href={finalVideoUrl} download="iklan_produk_final.mp4">
+                                            <Button className="mt-4"><DownloadIcon className="w-5 h-5"/> Unduh Video Final</Button>
+                                        </a>
+                                    </div>
+                                ) : (
+                                    <Button onClick={handleMergeVideos} disabled={isLoading || scenes.some(s => s.status !== 'done')}>
+                                        {isMerging ? <Spinner /> : <i className="fa-solid fa-film mr-2"></i>}
+                                        Gabungkan 4 Adegan
+                                    </Button>
+                                )}
+                            </div>
+                         )}
+                    </div>
                 )}
             </div>
-          </fieldset>
-          
-          <div className="pt-4 mt-auto border-t border-gray-700">
-              {isLoading ? (
-                  <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={handleStop}
-                      disabled={isStopping}
-                      className="w-full !bg-red-600 hover:!bg-red-700 focus:!ring-red-500 !text-white"
-                  >
-                      {isStopping ? (
-                          <> <Spinner className="h-5 w-5" /> {t('stoppingButton')} </>
-                      ) : (
-                         <>
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 000 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
-                          </svg>
-                          {t('stopButton')}
-                         </>
-                      )}
-                  </Button>
-              ) : (
-                  <Button 
-                    type="submit"
-                    className="w-full text-lg"
-                  >
-                      {t('generateVideoButton')} ({scenes.length} {scenes.length > 1 ? 'Scenes' : 'Scene'})
-                  </Button>
-              )}
-          </div>
-        </form>
-      </aside>
-
-      {/* Content Area */}
-      <main className="lg:col-span-9 bg-gray-900 p-4 md:p-8 overflow-y-auto h-full">
-        {error && (
-            <div className="text-center text-red-400 bg-red-900/30 p-4 rounded-lg mb-6 border border-red-800">
-                <p className="font-bold">{t('errorTitle')}</p>
-                <p className="text-sm">{error}</p>
-            </div>
-        )}
-        
-        {outputs.length > 0 ? (
-            <div className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                    {outputs.map((output, index) => (
-                        <div key={output.id} className="space-y-2 bg-gray-800 p-3 rounded-lg">
-                             <h3 className="text-sm font-semibold text-gray-400 text-center mb-2">{t('sceneLabel')} {index + 1}</h3>
-                             {output.status === 'done' && output.url ? (
-                                <>
-                                    <VideoPlayer videoUrl={output.url} aspectRatio={aspectRatio} />
-                                    <Button 
-                                        variant="secondary" 
-                                        onClick={() => handleDownload(output.url!, index)}
-                                        className="w-full mt-2"
-                                    >
-                                        <DownloadIcon className="w-5 h-5" />
-                                        {t('downloadVideoButton')}
-                                    </Button>
-                                </>
-                             ) : output.status === 'generating' ? (
-                                <div style={aspectRatioStyle} className="w-full bg-black rounded-md flex flex-col items-center justify-center text-gray-400">
-                                    <Spinner className="h-8 w-8"/>
-                                    <p className="mt-2 text-sm">{t('generatingSceneShort')}</p>
-                                </div>
-                             ) : (
-                                <div style={aspectRatioStyle} className="w-full bg-black rounded-md flex items-center justify-center text-gray-600 gap-2">
-                                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                                     <p className="text-sm font-semibold">{t('scenePending')}</p>
-                                </div>
-                             )}
-                        </div>
-                    ))}
-                </div>
-                 {/* Tombol 'Create Another' telah dihapus dari sini */}
-            </div>
-          ) : !error && !isLoading && (
-            <div className="flex items-center justify-center h-full">
-              <div className="text-center text-gray-600">
-                <svg xmlns="http://www.w3.org/2000/svg" className="mx-auto h-24 w-24" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-                <p className="mt-4 text-lg">{t('videoPlaceholder')}</p>
-              </div>
-            </div>
-          )
-        }
-      </main>
-    </div>
-  );
+             <style>{`
+                @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+                .animate-fade-in-fast { animation: fadeIn 0.4s ease-in-out; }
+            `}</style>
+        </div>
+    );
 };
 
 export default VideoGenerator;

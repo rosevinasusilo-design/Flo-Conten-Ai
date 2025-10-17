@@ -6,7 +6,7 @@ export interface Option {
 }
 
 // App Structure
-export type Tab = 'dashboard' | 'creativeHub' | 'videoPrompt' | 'ctGenerate' | 'fashionStudio' | 'productAnalysis' | 'ideCerita';
+export type Tab = 'dashboard' | 'creativeHub' | 'videoPrompt' | 'ctGenerate' | 'fashionStudio' | 'productAnalysis' | 'ideCerita' | 'studioFoto' | 'risetYoutube';
 
 // Image Generation & Editing
 export interface ImageInput {
@@ -29,7 +29,7 @@ export interface CreativeBrief {
 }
 
 // Video Generation
-export type VeoModel = 'veo-2.0-generate-001' | 'veo-3.0-fast-generate-preview' | 'veo-3.0-fast-generate-001' | 'veo-3.0-generate-001';
+export type VeoModel = 'veo-3.1-fast-generate-preview' | 'veo-3.1-generate-preview' | 'veo-2.0-generate-001' | 'veo-3.0-fast-generate-preview' | 'veo-3.0-fast-generate-001' | 'veo-3.0-generate-001';
 export type AspectRatio = '1:1' | '9:16' | '16:9' | '4:3' | '3:4';
 export type Resolution = '720p' | '1080p';
 export type CharacterVoice = 'none' | 'english' | 'bahasa-indonesia';
@@ -39,6 +39,18 @@ export interface Scene {
   prompt: string;
   usePreviousScene: boolean;
 }
+
+// Ads Video Generator
+export type AdStrategy = 'default' | 'problem-solution' | 'benefit-driven' | 'ugc-testimonial' | 'unboxing';
+export interface AdCreativeAnalysis {
+  productName: string;
+  productDescription: string;
+  targetAudience: string;
+  videoStyle: string;
+  sellingPoints: string[];
+  cta: string;
+}
+
 
 // CT Story Hub
 export interface StoryCharacter {

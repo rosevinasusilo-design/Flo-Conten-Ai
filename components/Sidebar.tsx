@@ -5,7 +5,8 @@ import {
     DashboardIcon, CreativeHubIcon, BrandKitIcon, ChatTutorIcon, 
     GenerationSuiteIcon, StudioSuiteIcon, JagoYtIcon, CtStoryIcon, 
     CtAdvancedIcon, CtProSuiteIcon, InfoIcon, SettingsIcon, 
-    UserIcon, LogoutIcon, XIcon, FashionStudioIcon, MagnifyingGlassIcon
+    UserIcon, LogoutIcon, XIcon, FashionStudioIcon, MagnifyingGlassIcon,
+    CameraIcon
 } from './icons';
 import { LanguageSwitcher } from './LanguageSwitcher';
 
@@ -127,6 +128,8 @@ const Sidebar: React.FC<SidebarProps> = ({ user, logout, activeTab, setActiveTab
             <li><NavItem icon={<FashionStudioIcon />} label="Fashion Studio" isActive={activeTab === 'fashionStudio'} onClick={() => handleNavClick('fashionStudio')} /></li>
             <li><NavItem icon={<MagnifyingGlassIcon />} label="Analisa Produk" isActive={activeTab === 'productAnalysis'} onClick={() => handleNavClick('productAnalysis')} /></li>
             <li><NavItem icon={<CtStoryIcon />} label="Ide Cerita" isActive={activeTab === 'ideCerita'} onClick={() => handleNavClick('ideCerita')} /></li>
+            <li><NavItem icon={<JagoYtIcon />} label="Riset Youtube" isActive={activeTab === 'risetYoutube'} onClick={() => handleNavClick('risetYoutube')} /></li>
+            <li><NavItem icon={<CameraIcon />} label="Studio Foto" isActive={activeTab === 'studioFoto'} onClick={() => handleNavClick('studioFoto')} /></li>
           </ul>
         </nav>
 

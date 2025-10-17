@@ -1,6 +1,6 @@
 import { GoogleGenAI, GenerateContentResponse, GenerateImagesResponse, Operation, Modality, Type } from "@google/genai";
 // FIX: Import CreativeBrief for the new generateFashionPhotoshoot function.
-import type { ImageInput, VeoModel, AspectRatio as VideoAspectRatio, Resolution, CharacterVoice, VisualStyle, ImageAspectRatio, CreativeBrief } from '../types';
+import type { ImageInput, VeoModel, AspectRatio as VideoAspectRatio, Resolution, CharacterVoice, VisualStyle, ImageAspectRatio, CreativeBrief, AdCreativeAnalysis, AdStrategy } from '../types';
 
 /**
  * A helper function to retry an async function with exponential backoff.
@@ -73,6 +73,63 @@ const getGenAIClient = (apiKey: string): GoogleGenAI => {
     }
     return new GoogleGenAI({ apiKey });
 };
+
+export const analyzeCharacterImages = async (
+  apiKey: string,
+  images: ImageInput[]
+): Promise<string> => {
+    const ai = getGenAIClient(apiKey);
+
+    const imageParts = images.map(img => ({
+        inlineData: { data: img.data, mimeType: img.mimeType },
+    }));
+
+    const prompt = `Analyze the provided image(s). Describe the subjects as concisely as possible, focusing on the number of people and their apparent gender. 
+    Examples:
+    - If there is one image of a woman: "a woman"
+    - If there is one image of a man: "a man"
+    - If there are two images, one of a man and one of a woman: "a man and a woman"
+    - If there are three images of women: "three women"
+    
+    Respond with ONLY this short descriptive phrase. Do not add any other text.`;
+
+    const textPart = { text: prompt };
+
+    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: { parts: [...imageParts, textPart] },
+    }));
+
+    return response.text.trim();
+};
+
+export const generatePhotographyPrompt = async (
+  apiKey: string,
+  baseIdea: string
+): Promise<string> => {
+    const ai = getGenAIClient(apiKey);
+    const prompt = `You are a world-class photography creative director. Based on the following simple idea, generate a single, detailed, and professional photography prompt for an AI image generator. The prompt should be a single paragraph.
+
+    The prompt must include rich details about:
+    - Subject and model description (if not already specified)
+    - Specific clothing and style
+    - The setting/background
+    - The quality and style of lighting (e.g., golden hour, soft studio light, dramatic shadows)
+    - Camera angle and shot type (e.g., full body, medium shot, low angle)
+    - The overall mood and atmosphere of the image.
+
+    The final output should be photorealistic and suitable for a high-fashion magazine.
+
+    Base Idea: "${baseIdea || 'a fashionable model'}"`;
+
+    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+    }));
+    
+    return response.text.trim();
+};
+
 
 export const generateSpeech = async (
     apiKey: string,
@@ -290,6 +347,60 @@ ${prompt}`;
   }
 };
 
+export const generateStudioPhotos = async (
+  apiKey: string,
+  {
+    modelImages,
+    prompt,
+    count,
+  }: {
+    modelImages: ImageInput[];
+    prompt: string;
+    count: number;
+  }
+): Promise<ImageInput[]> => {
+  const ai = getGenAIClient(apiKey);
+  
+  const modelImageParts = modelImages.map(img => ({
+    inlineData: { data: img.data, mimeType: img.mimeType },
+  }));
+  const textPart = { text: prompt };
+  const allParts = [...modelImageParts, textPart];
+
+  const imagePromises = Array(count).fill(0).map(async () => {
+    const response: GenerateContentResponse = await withRetry(() =>
+      ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: { parts: allParts },
+        config: {
+          responseModalities: [Modality.IMAGE, Modality.TEXT],
+        },
+      })
+    );
+
+    const candidate = response.candidates?.[0];
+    const imagePart = candidate?.content?.parts?.find(p => p.inlineData);
+
+    if (imagePart?.inlineData) {
+      return {
+        data: imagePart.inlineData.data,
+        mimeType: imagePart.inlineData.mimeType,
+      };
+    } else {
+      let reason = "Model did not generate a studio photo.";
+      if (response.promptFeedback?.blockReason) {
+        reason += ` Blocked due to safety policy: ${response.promptFeedback.blockReason}.`;
+      } else if (candidate?.finishReason && candidate.finishReason !== 'STOP') {
+        reason += ` Generation finished unexpectedly: ${candidate.finishReason}.`;
+      }
+      throw new Error(reason);
+    }
+  });
+
+  return Promise.all(imagePromises);
+};
+
+
 // FIX: Implement the missing generateFashionPhotoshoot function.
 export const generateFashionPhotoshoot = async (
   apiKey: string,
@@ -368,7 +479,7 @@ export const analyzeProductLink = async (
 
   Based on the product, its platform (detect if it's TikTok, Shopee, or Tokopedia from the URL), and its likely target audience, generate the following content in Bahasa Indonesia:
   1.  A detailed product analysis.
-  2.  Three variations of a compelling voice-over script ${voiceOverInstruction}. Each script variation MUST be a maximum of 500 characters. Each variation must include a strong hook, key product features, and a clear call-to-action (CTA).
+  2.  Three variations of a compelling voice-over script ${voiceOverInstruction}. The scripts must sound very human, conversational, and unique, as if written by a creative content creator, not a machine. Use engaging, and sometimes casual, Bahasa Indonesia. Each script variation MUST be a maximum of 500 characters and include a strong hook, key product features, and a clear call-to-action (CTA). For reference, here is an example of the desired style: "buat ngantor, bisa dong? hang out apalagi. ke kampus juga ok. lo mau buat apa? buruan cek out sekarang. klik keranjang kuning segera ya."
   3.  A short, SEO-optimized video caption/title specifically tailored for the detected platform (e.g., more casual for TikTok, more descriptive for Shopee/Tokopedia).
   4.  A list of relevant hashtags.
   
@@ -415,6 +526,140 @@ export const analyzeProductLink = async (
   return result;
 };
 
+export const analyzeProductForAdCreative = async (
+  apiKey: string,
+  productLink: string
+): Promise<AdCreativeAnalysis> => {
+  const ai = getGenAIClient(apiKey);
+
+  const prompt = `As an expert digital marketing strategist, analyze the product from the following URL: "${productLink}".
+Based on the product, its platform, and its likely target audience, generate the following content:
+1. A concise product name (in Bahasa Indonesia).
+2. A short, engaging product description (in Bahasa Indonesia).
+3. A suggested target audience (in Bahasa Indonesia).
+4. A compelling video style from this list: 'Dynamic & Fast-Paced', 'Cinematic & Elegant', 'Minimalist & Clean', 'Funny & Viral-style', 'UGC (User-Generated Content) style'.
+5. An array of 3 key selling points (in Bahasa Indonesia).
+6. A strong call-to-action (CTA) (in Bahasa Indonesia).
+
+Return the result as a single, minified JSON object.`;
+
+  const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+    model: 'gemini-2.5-pro',
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          productName: { type: Type.STRING },
+          productDescription: { type: Type.STRING },
+          targetAudience: { type: Type.STRING },
+          videoStyle: { type: Type.STRING },
+          sellingPoints: { type: Type.ARRAY, items: { type: Type.STRING } },
+          cta: { type: Type.STRING },
+        },
+        required: ["productName", "productDescription", "targetAudience", "videoStyle", "sellingPoints", "cta"],
+      },
+    },
+  }));
+
+  const jsonStr = response.text.trim();
+  const result = JSON.parse(jsonStr);
+  return result;
+};
+
+
+export const generateMultiSceneAdScript = async (
+  apiKey: string,
+  analysis: {
+    productName: string;
+    targetAudience: string;
+    videoStyle: string;
+    sellingPoints: string[];
+    cta: string;
+  },
+  aspectRatio: VideoAspectRatio,
+  adStrategy: AdStrategy
+): Promise<string[]> => {
+  const ai = getGenAIClient(apiKey);
+
+  let strategyInstruction = '';
+  switch (adStrategy) {
+    case 'problem-solution':
+      strategyInstruction = `
+- **Scene 1:** Visually represent a common problem or frustration that the target audience experiences. Do not show the product yet.
+- **Scene 2:** Introduce the product as the hero and the perfect solution to the problem shown in scene 1.
+- **Scene 3:** Show the product in action, demonstrating its effectiveness and ease of use in solving the problem.
+- **Scene 4:** Show the final, positive outcome. The character is happy and relieved, showcasing the result. End with the call to action.`;
+      break;
+    case 'benefit-driven':
+      strategyInstruction = `
+- **Scene 1:** Focus entirely on the first key selling point. Create a dynamic visual that showcases this benefit in an engaging way.
+- **Scene 2:** Focus entirely on the second key selling point.
+- **Scene 3:** Focus entirely on the third key selling point.
+- **Scene 4:** Summarize the feeling of having all these benefits and end with a strong call to action.`;
+      break;
+    case 'ugc-testimonial':
+      strategyInstruction = `The prompts must create a User-Generated Content (UGC) or testimonial-style video. Use phrases that suggest a real person is filming.
+- **Scene 1:** A selfie-style or point-of-view shot. A character looks slightly annoyed or is dealing with a problem.
+- **Scene 2:** The character introduces the product excitedly, maybe holding it up to the camera. Use phrases like "A first-person view of unboxing..." or "A phone camera shot of...".
+- **Scene 3:** Quick cuts showing the product being used in a realistic, non-professional setting.
+- **Scene 4:** The character is back in a selfie-style shot, looking happy and recommending the product to the viewer. Incorporate the call to action naturally.`;
+      break;
+    case 'unboxing':
+      strategyInstruction = `The video should simulate a satisfying unboxing experience.
+- **Scene 1:** A top-down or close-up shot of hands opening the product's packaging. Build anticipation.
+- **Scene 2:** The product is revealed for the first time. Make it look premium and exciting. A slow pan or a dramatic reveal.
+- **Scene 3:** A shot showing the key features of the product up close, right out of the box.
+- **Scene 4:** The product is held or displayed proudly, ready to be used. End with the call to action.`;
+      break;
+    default: // 'default' case
+      strategyInstruction = `The prompts must visually showcase the product in an exciting new context, highlighting its key features and appealing to the target audience. The final scene should incorporate the call to action.`;
+      break;
+  }
+
+  const prompt = `You are an expert video advertising director. Based on the product info and creative direction, create a script for a short video ad with exactly 4 continuous scenes.
+For each scene, provide a single, powerful, and descriptive prompt for a VEO model to generate a video clip.
+The prompts should describe visuals, camera movements, and atmosphere. The product from the reference image MUST be accurately represented and be the central focus.
+
+**Ad Strategy and Scene Structure:**
+${strategyInstruction}
+
+- Product Name: ${analysis.productName}
+- Target Audience: ${analysis.targetAudience}
+- Video Style: ${analysis.videoStyle}
+- Key Selling Points to Highlight: ${analysis.sellingPoints.join(', ')}
+- Call to Action: ${analysis.cta}
+- Final output aspect ratio must be ${aspectRatio}.
+
+Return the result as a single, minified JSON object with one key: "scenes". The value of "scenes" must be an array of exactly 4 strings, where each string is a VEO prompt.`;
+
+  const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+    model: 'gemini-2.5-pro',
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          scenes: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING },
+          }
+        },
+        required: ["scenes"],
+      },
+    },
+  }));
+
+  const jsonStr = response.text.trim();
+  const result = JSON.parse(jsonStr);
+  
+  if (!result.scenes || result.scenes.length !== 4) {
+    throw new Error("AI did not return a valid 4-scene script.");
+  }
+  return result.scenes;
+};
 
 // The existing service functions are kept below for other parts of the application.
 // ... (The rest of the original services/geminiService.ts file)
@@ -443,6 +688,8 @@ export const generateVideo = async (
   const ai = getGenAIClient(apiKey);
 
   let finalPrompt: string;
+  // The original implementation mixed API parameters into the text prompt.
+  // This has been corrected to only include the narrative/animation instructions.
   if (typeof prompt === 'string') {
     let fullPrompt: string;
     
@@ -453,19 +700,15 @@ export const generateVideo = async (
     }
     
     fullPrompt += `\n\n**Animation Instructions:** "${prompt}"`;
-    fullPrompt += `\n\n**CRITICAL TECHNICAL REQUIREMENTS (MUST be followed):**`;
-    
-    fullPrompt += `\n- **Visual Style:** The visual style must be ${visualStyle}.`;
-    fullPrompt += `\n- **Resolution:** The video resolution should be ${resolution}.`;
+    fullPrompt += `\n\n**Visual Style:** The visual style must be ${visualStyle}.`;
 
     if (enableSound && characterVoice !== 'none') {
-        fullPrompt += `\n- **Audio:** The video must include audio with a character voice in ${characterVoice}.`;
+        fullPrompt += `\n**Audio:** The video must include audio with a character voice in ${characterVoice}.`;
     } else if (enableSound) {
-        fullPrompt += `\n- **Audio:** The video must include ambient sounds.`;
+        fullPrompt += `\n**Audio:** The video must include ambient sounds.`;
     } else {
-        fullPrompt += `\n- **Audio:** The video must be silent.`;
+        fullPrompt += `\n**Audio:** The video must be silent.`;
     }
-
     finalPrompt = fullPrompt;
   } else {
     finalPrompt = JSON.stringify(prompt);
@@ -480,6 +723,11 @@ export const generateVideo = async (
       aspectRatio: aspectRatio,
     }
   };
+  
+  // The resolution parameter is only supported on VEO 3.1 models.
+  if (model.startsWith('veo-3.1')) {
+    requestPayload.config.resolution = resolution;
+  }
 
   if (imageBase64 && imageMimeType) {
     requestPayload.image = {

@@ -16,6 +16,8 @@ import SettingsModal from './components/SettingsModal';
 import FashionStudio from './components/FashionStudio';
 import ProductAnalysis from './components/ProductAnalysis';
 import IdeCerita from './components/IdeCerita';
+import StudioFoto from './components/StudioFoto';
+import RisetYoutube from './components/RisetYoutube';
 
 const TAB_TITLES: Record<Tab, string> = {
   dashboard: 'Dashboard',
@@ -25,6 +27,8 @@ const TAB_TITLES: Record<Tab, string> = {
   fashionStudio: 'Fashion Studio',
   productAnalysis: 'Analisa Produk',
   ideCerita: 'Ide Cerita',
+  studioFoto: 'Studio Foto',
+  risetYoutube: 'Riset Youtube',
 };
 
 
@@ -32,7 +36,7 @@ export default function App() {
   const { t } = useLanguage();
   const { user, loading: authLoading, logout, verifySession } = useAuth();
   const { isInitializing: apiKeyInitializing } = useApiKey();
-  const [activeTab, setActiveTab] = useState<Tab>('fashionStudio');
+  const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   
@@ -114,6 +118,12 @@ export default function App() {
             </div>
              <div style={{ display: activeTab === 'ideCerita' ? 'block' : 'none' }} className="h-full">
               <IdeCerita />
+            </div>
+            <div style={{ display: activeTab === 'risetYoutube' ? 'block' : 'none' }} className="h-full">
+              <RisetYoutube />
+            </div>
+            <div style={{ display: activeTab === 'studioFoto' ? 'block' : 'none' }} className="h-full">
+              <StudioFoto />
             </div>
           </div>
         </main>

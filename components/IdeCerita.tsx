@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import Button from './Button';
-import { SparklesIcon, XIcon, CameraIcon, ExclamationCircleIcon, ClipboardIcon, DownloadIcon, VideoIcon, CheckCircleIcon } from './icons';
+import { SparklesIcon, XIcon, CameraIcon, ExclamationCircleIcon, ClipboardIcon, DownloadIcon, VideoIcon, CheckCircleIcon, MicrophoneIcon } from './icons';
 import { useApiKey } from '../contexts/ApiKeyContext';
 import { generateImage, generateVideo, generateImageWithCharacterConsistency, generateSpeech } from '../services/geminiService';
 import { Spinner } from './Spinner';
@@ -64,11 +64,12 @@ interface Scene {
     id: number;
     narrative: string;
     imagePrompt: string;
-    status: 'pending' | 'generating-image' | 'image-done' | 'generating-video' | 'video-done' | 'generating-audio' | 'done' | 'error';
+    status: 'pending' | 'generating-image' | 'image-done' | 'generating-video' | 'done' | 'error';
     imageUrl?: string;
     imageBase64?: string;
     videoUrl?: string;
     audioUrl?: string;
+    audioStatus?: 'idle' | 'loading' | 'done' | 'error';
 }
 
 
@@ -78,8 +79,6 @@ const getSceneStatus = (status: Scene['status']) => {
         case 'generating-image': return { text: 'Membuat Gbr...', color: 'bg-yellow-500/20 text-yellow-300' };
         case 'image-done': return { text: 'Gbr Selesai', color: 'bg-sky-500/20 text-sky-300' };
         case 'generating-video': return { text: 'Membuat Vid...', color: 'bg-blue-500/20 text-blue-300' };
-        case 'video-done': return { text: 'Vid Selesai', color: 'bg-purple-500/20 text-purple-300' };
-        case 'generating-audio': return { text: 'Membuat Audio...', color: 'bg-pink-500/20 text-pink-300' };
         case 'done': return { text: 'Selesai', color: 'bg-green-500/20 text-green-300' };
         case 'error': return { text: 'Error', color: 'bg-red-500/20 text-red-300' };
     }
@@ -218,56 +217,98 @@ const IdeCerita: React.FC = () => {
         setIsGeneratingScenes(true);
         setGlobalError(null);
         setScenes([]);
-        
+    
         try {
             const ai = new GoogleGenAI({ apiKey });
             const characterDescriptions = characters.map(c => `- ${c.name || 'Unnamed Character'}: ${c.description}`).join('\n');
-            
-            const prompt = `As a creative storyteller and visual director, generate a 7-scene story based on the following elements.
-- Story Idea: "${storyIdea}"
-- Visual Style: "${selectedStyle}"
-- Characters:
-${characterDescriptions}
-
-For each scene, provide two things:
-1. A "narrative": A very short, concise sentence for a voice-over. This narrative **MUST be short enough to be spoken clearly within 8 seconds (approximately 20-25 words maximum).**
-2. An "imagePrompt": A detailed image prompt for an AI image generator that must incorporate the specified visual style and characters.
-
-Return the result as a single JSON object with one key: "scenes". The value of "scenes" must be an array of 7 objects. Each object in the array must have two keys: "narrative" and "imagePrompt".`;
-
-            const response: GenerateContentResponse = await ai.models.generateContent({
+    
+            // STEP 1: Generate the story outline (narratives only)
+            const outlinePrompt = `As a creative storyteller, generate a 7-scene story outline based on the following elements.
+    - Story Idea: "${storyIdea}"
+    - Characters:
+    ${characterDescriptions}
+    
+    For each scene, provide a "narrative": A very short, concise sentence for a voice-over (max 25 words).
+    Return the result as a single JSON object with one key: "narratives". The value must be an array of 7 narrative strings.`;
+    
+            const outlineResponse: GenerateContentResponse = await ai.models.generateContent({
                 model: 'gemini-2.5-flash',
-                contents: prompt,
+                contents: outlinePrompt,
                 config: {
                     responseMimeType: "application/json",
                     responseSchema: {
                         type: Type.OBJECT,
                         properties: {
-                            scenes: {
+                            narratives: {
                                 type: Type.ARRAY,
-                                items: {
-                                    type: Type.OBJECT,
-                                    properties: {
-                                        narrative: { type: Type.STRING },
-                                        imagePrompt: { type: Type.STRING }
-                                    }
-                                }
+                                items: { type: Type.STRING }
                             }
                         }
                     }
                 }
             });
-            const cleanedJson = response.text.replace(/```json/g, '').replace(/```/g, '').trim();
-            const result = JSON.parse(cleanedJson);
-
-            const newScenes: Scene[] = result.scenes.map((sceneData: any, index: number) => ({
+    
+            const outlineResult = JSON.parse(outlineResponse.text);
+            if (!outlineResult.narratives || outlineResult.narratives.length === 0) {
+                throw new Error("AI failed to generate a story outline.");
+            }
+    
+            // STEP 2: Populate scenes with narratives immediately for better UX
+            const initialScenes: Scene[] = outlineResult.narratives.map((narrative: string, index: number) => ({
                 id: Date.now() + index,
-                narrative: sceneData.narrative,
-                imagePrompt: sceneData.imagePrompt,
-                status: 'pending'
+                narrative: narrative,
+                imagePrompt: 'Generating prompt...', // Placeholder
+                status: 'pending',
+                audioStatus: 'idle',
             }));
-            setScenes(newScenes);
-
+            setScenes(initialScenes);
+    
+            // STEP 3: Generate image prompts for each scene sequentially in the background
+            const finalScenes: Scene[] = [];
+            for (let i = 0; i < initialScenes.length; i++) {
+                const scene = initialScenes[i];
+                
+                try {
+                    const imagePromptPrompt = `As a visual director, create a detailed image prompt for an AI image generator.
+    - Story Idea: "${storyIdea}"
+    - Visual Style: "${selectedStyle}"
+    - Characters:
+    ${characterDescriptions}
+    - Scene Narrative: "${scene.narrative}"
+    
+    The image prompt should vividly describe the scene based on the narrative, incorporating the characters and visual style.
+    Return a single JSON object with one key: "imagePrompt".`;
+    
+                    const imagePromptResponse: GenerateContentResponse = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: imagePromptPrompt,
+                        config: {
+                            responseMimeType: "application/json",
+                            responseSchema: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    imagePrompt: { type: Type.STRING }
+                                }
+                            }
+                        }
+                    });
+                    
+                    const imagePromptResult = JSON.parse(imagePromptResponse.text);
+                    const finalScene = { ...scene, imagePrompt: imagePromptResult.imagePrompt };
+                    finalScenes.push(finalScene);
+                    
+                    // Update UI incrementally
+                    setScenes(currentScenes => currentScenes.map(s => s.id === scene.id ? finalScene : s));
+    
+                } catch (sceneError) {
+                    console.error(`Error generating prompt for scene ${i + 1}:`, sceneError);
+                    // Keep the narrative but show an error for the prompt
+                    const errorScene = { ...scene, imagePrompt: 'Error generating prompt.' };
+                    finalScenes.push(errorScene);
+                    setScenes(currentScenes => currentScenes.map(s => s.id === scene.id ? errorScene : s));
+                }
+            }
+    
         } catch (err) {
             console.error(err);
             const errorMessage = err instanceof Error ? err.message : 'Gagal membuat adegan cerita.';
@@ -330,7 +371,7 @@ Return the result as a single JSON object with one key: "scenes". The value of "
                 '16:9', // Force 16:9 for VEO 3
                 false, '720p', 'none', 'Cinematic'
             );
-            setScenes(prev => prev.map(s => s.id === id ? { ...s, status: 'video-done', videoUrl } : s));
+            setScenes(prev => prev.map(s => s.id === id ? { ...s, status: 'done', videoUrl } : s));
         } catch (err) {
             console.warn(`Video generation failed with primary model (${primaryModel}). Error:`, err);
             setGlobalError(`Gagal dengan model VEO 3, mencoba VEO 2...`);
@@ -347,7 +388,7 @@ Return the result as a single JSON object with one key: "scenes". The value of "
                     aspectRatio, // Use user's selected AR for VEO 2
                     false, '720p', 'none', 'Cinematic'
                 );
-                setScenes(prev => prev.map(s => s.id === id ? { ...s, status: 'video-done', videoUrl } : s));
+                setScenes(prev => prev.map(s => s.id === id ? { ...s, status: 'done', videoUrl } : s));
                 setGlobalError(null); // Clear temporary error
             } catch (fallbackErr) {
                 console.error(`Fallback video generation also failed with model (${fallbackModel}). Error:`, fallbackErr);
@@ -357,32 +398,36 @@ Return the result as a single JSON object with one key: "scenes". The value of "
             }
         }
     };
-
+    
     const handleGenerateSceneAudio = async (id: number) => {
         const scene = scenes.find(s => s.id === id);
-        if (!scene || !scene.narrative) return;
+        if (!scene || !isApiKeySet) return;
     
-        setScenes(prev => prev.map(s => s.id === id ? { ...s, status: 'generating-audio' } : s));
-        setGlobalError(null);
+        setScenes(prev => prev.map(s => s.id === id ? { ...s, audioStatus: 'loading' } : s));
     
         try {
             const base64Audio = await generateSpeech(apiKey, scene.narrative, selectedVoice);
-            
-            // Decode base64 and create a WAV blob
             const pcmBytes = decodeBase64(base64Audio);
             const pcmData = new Int16Array(pcmBytes.buffer);
             const wavBlob = pcmToWavBlob(pcmData, 24000, 1);
             const audioUrl = URL.createObjectURL(wavBlob);
     
-            setScenes(prev => prev.map(s => s.id === id ? { ...s, status: 'done', audioUrl } : s));
+            setScenes(prev => prev.map(s => s.id === id ? { ...s, audioStatus: 'done', audioUrl } : s));
         } catch (err) {
-            console.error('Audio generation failed:', err);
+            console.error("Audio generation failed:", err);
             const errorMessage = err instanceof Error ? err.message : 'Gagal membuat audio.';
             setGlobalError(errorMessage);
-            setScenes(prev => prev.map(s => s.id === id ? { ...s, status: 'error' } : s));
+            setScenes(prev => prev.map(s => s.id === id ? { ...s, audioStatus: 'error' } : s));
         }
     };
-
+    
+    const handleSceneTextChange = (id: number, field: 'narrative' | 'imagePrompt', value: string) => {
+        setScenes(prevScenes =>
+            prevScenes.map(scene =>
+                scene.id === id ? { ...scene, [field]: value } : scene
+            )
+        );
+    };
 
     const handleWheel = (e: React.WheelEvent, ref: React.RefObject<HTMLDivElement>) => {
         if (ref.current) {
@@ -465,25 +510,24 @@ Return the result as a single JSON object with one key: "scenes". The value of "
                         </div>
                         <div className="bg-gray-800/50 backdrop-blur-sm p-6 border border-gray-700 rounded-2xl">
                              <h2 className="text-xl font-bold text-white mb-4">4. Pengaturan Output</h2>
-                             <div className="grid grid-cols-2 gap-4">
-                                <button onClick={() => setAspectRatio('16:9')} className={`py-3 px-4 rounded-lg font-semibold transition-colors ${aspectRatio === '16:9' ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>16:9</button>
-                                <button onClick={() => setAspectRatio('9:16')} className={`py-3 px-4 rounded-lg font-semibold transition-colors ${aspectRatio === '9:16' ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>9:16</button>
-                             </div>
-                             <div className="mt-4">
-                                <label className="block text-sm font-medium text-gray-300 mb-2">Gaya Suara (Voice Style)</label>
-                                <div className="relative">
-                                    <select
-                                        value={selectedVoice}
-                                        onChange={(e) => setSelectedVoice(e.target.value)}
-                                        className="w-full appearance-none bg-gray-700 border border-gray-600 text-white rounded-lg py-2.5 px-3 pr-8 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
-                                    >
-                                        {voiceOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                                    </select>
-                                    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-400">
-                                        <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
+                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-300 mb-2">Rasio Aspek</label>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button onClick={() => setAspectRatio('16:9')} className={`py-2 px-4 rounded-lg font-semibold transition-colors ${aspectRatio === '16:9' ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>16:9</button>
+                                        <button onClick={() => setAspectRatio('9:16')} className={`py-2 px-4 rounded-lg font-semibold transition-colors ${aspectRatio === '9:16' ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>9:16</button>
                                     </div>
                                 </div>
-                            </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-300 mb-2">Gaya Suara (Voice Style)</label>
+                                    <div className="relative">
+                                        <select value={selectedVoice} onChange={(e) => setSelectedVoice(e.target.value)} className="w-full appearance-none bg-gray-700 border border-gray-600 text-white rounded-lg py-2.5 px-3 pr-8 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition">
+                                            {voiceOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                                        </select>
+                                        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-400"><svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" /></svg></div>
+                                    </div>
+                                </div>
+                             </div>
                         </div>
                     </div>
                 </div>
@@ -520,11 +564,6 @@ Return the result as a single JSON object with one key: "scenes". The value of "
                                             <span className={`text-xs px-2 py-0.5 rounded-full ${statusInfo.color}`}>{statusInfo.text}</span>
                                         </div>
                                         <div className="flex gap-2">
-                                            {scene.audioUrl && (
-                                                <button onClick={() => handleDownload(scene.audioUrl!, `adegan_${index + 1}_audio.wav`)} className="p-1.5 bg-gray-700 rounded-full text-gray-300 hover:bg-emerald-600 hover:text-white" title="Download Audio">
-                                                    <i className="fa-solid fa-waveform"></i>
-                                                </button>
-                                            )}
                                             {scene.videoUrl ? (
                                                 <button onClick={() => handleDownload(scene.videoUrl!, `adegan_${index + 1}.mp4`)} className="p-1.5 bg-gray-700 rounded-full text-gray-300 hover:bg-emerald-600 hover:text-white" title="Download Video">
                                                     <DownloadIcon className="w-4 h-4" />
@@ -537,7 +576,7 @@ Return the result as a single JSON object with one key: "scenes". The value of "
                                         </div>
                                     </div>
                                     <div className="aspect-video bg-black rounded-lg flex items-center justify-center relative">
-                                        {(scene.status === 'generating-image' || scene.status === 'generating-video' || scene.status === 'generating-audio') && (
+                                        {(scene.status === 'generating-image' || scene.status === 'generating-video') && (
                                             <div className="absolute inset-0 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center text-white text-center z-10 rounded-lg">
                                                 <Spinner />
                                                 <p className="text-xs mt-2">{statusInfo.text}</p>
@@ -556,17 +595,43 @@ Return the result as a single JSON object with one key: "scenes". The value of "
                                         )}
                                     </div>
 
-                                    <div className="space-y-2 text-xs flex-grow">
+                                    <div className="space-y-3 text-xs flex-grow">
                                         <div>
                                             <div className="flex justify-between items-center mb-1">
-                                                <label className="font-semibold text-gray-400">Narasi</label>
+                                                <label className="font-semibold text-gray-400">Narasi & Voice Over</label>
                                                 <button onClick={() => handleCopy(`narrative-${scene.id}`, scene.narrative)} className="p-1.5 bg-gray-700 rounded-full text-gray-400 hover:bg-emerald-600 hover:text-white transition-colors">
                                                     {justCopiedId === `narrative-${scene.id}` ? <CheckCircleIcon className="w-4 h-4"/> : <ClipboardIcon className="w-4 h-4" />}
                                                 </button>
                                             </div>
-                                            <p className="w-full bg-gray-800 border border-gray-700 rounded-md p-2 text-gray-300 resize-none">
-                                                {scene.narrative}
-                                            </p>
+                                            <textarea
+                                                value={scene.narrative}
+                                                onChange={e => handleSceneTextChange(scene.id, 'narrative', e.target.value)}
+                                                rows={3}
+                                                className="w-full bg-gray-800 border border-gray-700 rounded-md p-2 text-gray-300 resize-y focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 transition-colors"
+                                            />
+                                            <div className="pt-2">
+                                                {scene.audioStatus === 'done' && scene.audioUrl ? (
+                                                    <div className="flex items-center gap-2">
+                                                        <audio src={scene.audioUrl} controls className="w-full h-8" />
+                                                        <button
+                                                            onClick={() => handleDownload(scene.audioUrl!, `adegan_${index + 1}_audio.wav`)}
+                                                            className="flex-shrink-0 p-2 bg-gray-700 rounded-full text-gray-300 hover:bg-emerald-600 hover:text-white"
+                                                            title="Download Audio"
+                                                        >
+                                                            <DownloadIcon className="w-4 h-4" />
+                                                        </button>
+                                                    </div>
+                                                ) : scene.audioStatus === 'loading' ? (
+                                                    <Button size="sm" variant="secondary" className="w-full" disabled>
+                                                        <Spinner className="w-4 h-4"/> Membuat Audio...
+                                                    </Button>
+                                                ) : (
+                                                    <Button onClick={() => handleGenerateSceneAudio(scene.id)} disabled={scene.status === 'pending' || scene.status.startsWith('generating')} size="sm" variant="secondary" className="w-full">
+                                                        <MicrophoneIcon className="w-4 h-4 mr-2" />
+                                                        {scene.audioStatus === 'error' ? 'Coba Lagi Voice Over' : 'Buat Voice Over'}
+                                                    </Button>
+                                                )}
+                                            </div>
                                         </div>
                                         <div>
                                              <div className="flex justify-between items-center mb-1">
@@ -575,15 +640,13 @@ Return the result as a single JSON object with one key: "scenes". The value of "
                                                     {justCopiedId === `prompt-${scene.id}` ? <CheckCircleIcon className="w-4 h-4"/> : <ClipboardIcon className="w-4 h-4" />}
                                                 </button>
                                             </div>
-                                            <p className="w-full bg-gray-800 border border-gray-700 rounded-md p-2 text-gray-300 resize-none">
-                                                {scene.imagePrompt}
-                                            </p>
+                                            <textarea
+                                                value={scene.imagePrompt}
+                                                onChange={e => handleSceneTextChange(scene.id, 'imagePrompt', e.target.value)}
+                                                rows={3}
+                                                className="w-full bg-gray-800 border border-gray-700 rounded-md p-2 text-gray-300 resize-y focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 transition-colors"
+                                            />
                                         </div>
-                                        {scene.audioUrl && (
-                                            <div className="pt-2">
-                                                <audio src={scene.audioUrl} controls className="w-full h-8" />
-                                            </div>
-                                        )}
                                     </div>
                                     
                                     <div className="mt-auto pt-2 space-y-2">
@@ -596,16 +659,6 @@ Return the result as a single JSON object with one key: "scenes". The value of "
                                             className="w-full">
                                             <VideoIcon className="w-4 h-4 mr-2"/>
                                             {scene.videoUrl ? 'Ulangi Video' : 'Generate Video'}
-                                        </Button>
-                                        <Button 
-                                            onClick={() => handleGenerateSceneAudio(scene.id)}
-                                            disabled={scene.status !== 'video-done' && scene.status !== 'done'}
-                                            size="sm"
-                                            variant="secondary"
-                                            className="w-full"
-                                        >
-                                            <i className="fa-solid fa-microphone-lines w-4 h-4 mr-2"></i>
-                                            {scene.audioUrl ? 'Ulangi Audio' : 'Generate Audio'}
                                         </Button>
                                     </div>
                                 </div>
